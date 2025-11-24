@@ -4,7 +4,8 @@ import path from "path";
 import { Command } from "commander";
 import express from "express";
 import multer from "multer";
-
+import swaggerUi from "swagger-ui-express";
+import swaggerJsdoc from "swagger-jsdoc";
 
 const program = new Command();
 
@@ -28,22 +29,34 @@ if (!fs.existsSync(CACHE_DIR)) {
     console.log(`Створено директорію кешу: ${CACHE_DIR}`);
 }
 
-
 const app = express();
 
-// Щоб читати JSON
+// Swagger конфіг
+const swaggerOptions = {
+    definition: {
+        openapi: "3.0.0",
+        info: {
+            title: "Inventory Service API",
+            version: "1.0.0",
+            description: "Лабораторна робота №6. Сервіс інвентаризації.",
+        },
+        servers: [
+            { url: `http://${HOST}:${PORT}` }
+        ]
+    },
+    apis: ["./index.js"]
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
+app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+// Middleware
 app.use(express.json());
-
-// Щоб читати форму x-www-form-urlencoded
 app.use(express.urlencoded({ extended: true }));
-
-// Щоб віддавати HTML-форми та інші файли
 app.use(express.static(__dirname));
-
 
 let inventory = [];
 let nextId = 1;
-
 
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -57,19 +70,70 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-// Це дозволить отримувати фото по URL /inventory-photo/...
 app.use("/inventory-photo", express.static(CACHE_DIR));
 
-
-
-
-// Головна сторінка
+/**
+ * @openapi
+ * /:
+ *   get:
+ *     summary: Перевірка роботи сервера
+ *     responses:
+ *       200:
+ *         description: Сервер працює
+ */
 app.get("/", (req, res) => {
     res.status(200).send("Inventory service is running");
 });
 
 
-// ➤ POST /register
+
+/**
+ * @openapi
+ * /search:
+ *   get:
+ *     summary: Пошук речі через форму (GET)
+ *     parameters:
+ *       - in: query
+ *         name: id
+ *         required: true
+ *       - in: query
+ *         name: includePhoto
+ *     responses:
+ *       200:
+ *         description: Знайдено
+ *       404:
+ *         description: Не знайдено
+ */
+app.get("/search", (req, res) => {
+    const id = parseInt(req.query.id);
+    const includePhoto = req.query.includePhoto === "on";
+
+    const item = inventory.find(i => i.id === id);
+
+    if (!item) return res.status(404).send("Річ не знайдена");
+
+    if (includePhoto && item.photoPath) {
+        const fileName = path.basename(item.photoPath);
+        const fullPath = path.resolve(CACHE_DIR, fileName);
+
+        if (!fs.existsSync(fullPath)) {
+            return res.status(404).send("Фото не знайдено");
+        }
+
+        return res.sendFile(fullPath);
+    }
+
+    res.status(200).json(item);
+});
+
+
+
+/**
+ * @openapi
+ * /register:
+ *   post:
+ *     summary: Реєстрація нової речі
+ */
 app.post("/register", upload.single("photo"), (req, res) => {
     const { inventory_name, description } = req.body;
 
@@ -78,9 +142,7 @@ app.post("/register", upload.single("photo"), (req, res) => {
     }
 
     let photoPath = null;
-    if (req.file) {
-        photoPath = `/inventory-photo/${req.file.filename}`;
-    }
+    if (req.file) photoPath = `/inventory-photo/${req.file.filename}`;
 
     const newItem = {
         id: nextId++,
@@ -91,37 +153,27 @@ app.post("/register", upload.single("photo"), (req, res) => {
 
     inventory.push(newItem);
 
-    return res.status(201).json(newItem);
+    res.status(201).json(newItem);
 });
 
-
-// ➤ GET /inventory (всі елементи)
 app.get("/inventory", (req, res) => {
     res.status(200).json(inventory);
 });
 
-
-// ➤ GET /inventory/:id (один елемент)
 app.get("/inventory/:id", (req, res) => {
     const id = parseInt(req.params.id);
-    const item = inventory.find((i) => i.id === id);
+    const item = inventory.find(i => i.id === id);
 
-    if (!item) {
-        return res.status(404).json({ message: "Річ не знайдена" });
-    }
+    if (!item) return res.status(404).json({ message: "Річ не знайдена" });
 
     res.status(200).json(item);
 });
 
-
-// ➤ PUT /inventory/:id (оновити назву/опис)
 app.put("/inventory/:id", (req, res) => {
     const id = parseInt(req.params.id);
-    const item = inventory.find((i) => i.id === id);
+    const item = inventory.find(i => i.id === id);
 
-    if (!item) {
-        return res.status(404).json({ message: "Річ не знайдена" });
-    }
+    if (!item) return res.status(404).json({ message: "Річ не знайдена" });
 
     const { inventory_name, description } = req.body;
 
@@ -131,109 +183,77 @@ app.put("/inventory/:id", (req, res) => {
     res.status(200).json(item);
 });
 
-
-// ➤ PUT /inventory/:id/photo (оновити фото)
-app.put("/inventory/:id/photo", upload.single("photo"), (req, res) => {
-    const id = parseInt(req.params.id);
-    const item = inventory.find((i) => i.id === id);
-
-    if (!item) {
-        return res.status(404).json({ message: "Річ не знайдена" });
-    }
-
-    if (!req.file) {
-        return res.status(400).json({ message: "Фото не передано" });
-    }
-
-    item.photoPath = `/inventory-photo/${req.file.filename}`;
-
-    res.status(200).json(item);
-});
-
-
-// ➤ GET /inventory/:id/photo (отримати фото)
 app.get("/inventory/:id/photo", (req, res) => {
     const id = parseInt(req.params.id);
-    const item = inventory.find((i) => i.id === id);
+    const item = inventory.find(i => i.id === id);
 
-    if (!item || !item.photoPath) {
+    if (!item || !item.photoPath)
         return res.status(404).json({ message: "Фото не знайдено" });
-    }
 
     const fileName = path.basename(item.photoPath);
-
-    // ВАЖЛИВО: правильний абсолютний шлях
     const fullPath = path.resolve(CACHE_DIR, fileName);
 
-    if (!fs.existsSync(fullPath)) {
-        return res.status(404).json({ message: "Файл фото відсутній" });
-    }
+    if (!fs.existsSync(fullPath))
+        return res.status(404).json({ message: "Файл відсутній" });
 
+    res.setHeader("Content-Type", "image/jpeg");
     res.sendFile(fullPath);
 });
 
+app.put("/inventory/:id/photo", upload.single("photo"), (req, res) => {
+    const id = parseInt(req.params.id);
+    const item = inventory.find(i => i.id === id);
 
-// ➤ DELETE /inventory/:id (видалити елемент)
+    if (!item) return res.status(404).json({ message: "Річ не знайдена" });
+    if (!req.file) return res.status(400).json({ message: "Фото не передано" });
+
+    item.photoPath = `/inventory-photo/${req.file.filename}`;
+    res.status(200).json(item);
+});
+
 app.delete("/inventory/:id", (req, res) => {
     const id = parseInt(req.params.id);
-    const index = inventory.findIndex((i) => i.id === id);
+    const index = inventory.findIndex(i => i.id === id);
 
-    if (index === -1) {
+    if (index === -1)
         return res.status(404).json({ message: "Річ не знайдена" });
-    }
 
     inventory.splice(index, 1);
-
     res.status(200).json({ message: "Річ видалено" });
 });
 
-
-// ➤ GET /RegisterForm.html
-app.get("/RegisterForm.html", (req, res) => {
-    res.sendFile(path.join(__dirname, "RegisterForm.html"));
-});
-
-// ➤ GET /SearchForm.html
-app.get("/SearchForm.html", (req, res) => {
-    res.sendFile(path.join(__dirname, "SearchForm.html"));
-});
-
-
-// ➤ POST /search (форма пошуку)
+/**
+ * @openapi
+ * /search:
+ *   post:
+ *     summary: Пошук речі через форму (POST)
+ */
 app.post("/search", (req, res) => {
     const { id, has_photo } = req.body;
     const numericId = parseInt(id);
+    const item = inventory.find(i => i.id === numericId);
 
-    const item = inventory.find((i) => i.id === numericId);
+    if (!item) return res.status(404).send("Річ не знайдена");
 
-    if (!item) {
-        return res.status(404).send("Річ не знайдена");
-    }
-
-    let description = item.description;
-
-    if (has_photo && item.photoPath) {
-        description += ` (Фото: ${item.photoPath})`;
-    }
+    let desc = item.description;
+    if (has_photo && item.photoPath)
+        desc += ` (Фото: ${item.photoPath})`;
 
     res.status(200).json({
         id: item.id,
         inventory_name: item.inventory_name,
-        description,
+        description: desc,
         photoPath: item.photoPath,
     });
 });
-
 
 // 405 Method Not Allowed
 app.use((req, res) => {
     res.status(405).send("Method Not Allowed");
 });
 
-
-
 const server = http.createServer(app);
 
 server.listen(PORT, HOST, () => {
-    console.log(`Сервер запущено на http://${HOST}:${PORT}`);
+    console.log(`Сервер запущено: http://${HOST}:${PORT}`);
 });
