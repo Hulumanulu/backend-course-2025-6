@@ -28,6 +28,35 @@ if (!fs.existsSync(CACHE_DIR)) {
     console.log(`Створено директорію кешу: ${CACHE_DIR}`);
 }
 
+const INVENTORY_FILE = path.join(__dirname, "inventory.json");
+
+let inventory = [];
+let nextId = 1;
+
+// -------------------------------
+// JSON LOAD / SAVE
+// -------------------------------
+function saveInventory() {
+    fs.writeFileSync(INVENTORY_FILE, JSON.stringify(inventory, null, 2));
+}
+
+function loadInventory() {
+    if (fs.existsSync(INVENTORY_FILE)) {
+        const data = fs.readFileSync(INVENTORY_FILE, "utf-8");
+        inventory = JSON.parse(data);
+
+        // Відновлюємо nextId щоб ID не повторювались
+        nextId = inventory.length > 0
+            ? Math.max(...inventory.map(i => i.id)) + 1
+            : 1;
+    }
+}
+
+loadInventory(); // <<< ОБОВ'ЯЗКОВО
+
+// -------------------------------
+// EXPRESS INIT
+// -------------------------------
 const app = express();
 
 const swaggerOptions = {
@@ -50,9 +79,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(__dirname));
 
-let inventory = [];
-let nextId = 1;
-
+// -------------------------------
+// MULTER (UPLOADS)
+// -------------------------------
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
         cb(null, CACHE_DIR);
@@ -67,40 +96,15 @@ const upload = multer({ storage });
 
 app.use("/inventory-photo", express.static(CACHE_DIR));
 
-/**
- * @openapi
- * /:
- *   get:
- *     summary: Перевірка роботи сервера
- *     responses:
- *       200:
- *         description: Сервер працює
- */
+// -------------------------------
+// ROUTES
+// -------------------------------
+
 app.get("/", (req, res) => {
     res.status(200).send("Inventory service is running");
 });
 
-/**
- * @openapi
- * /search:
- *   get:
- *     summary: Пошук речі через форму (GET)
- *     parameters:
- *       - in: query
- *         name: id
- *         required: true
- *         schema:
- *           type: integer
- *       - in: query
- *         name: includePhoto
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Знайдено
- *       404:
- *         description: Не знайдено
- */
+// GET SEARCH
 app.get("/search", (req, res) => {
     const id = parseInt(req.query.id);
     const includePhoto = req.query.includePhoto === "on";
@@ -121,33 +125,7 @@ app.get("/search", (req, res) => {
     res.status(200).json(item);
 });
 
-/**
- * @openapi
- * /register:
- *   post:
- *     summary: Реєстрація нової речі
- *     consumes:
- *       - multipart/form-data
- *     requestBody:
- *       required: true
- *       content:
- *         multipart/form-data:
- *           schema:
- *             type: object
- *             properties:
- *               inventory_name:
- *                 type: string
- *               description:
- *                 type: string
- *               photo:
- *                 type: string
- *                 format: binary
- *     responses:
- *       201:
- *         description: Успішно створено
- *       400:
- *         description: Некоректні дані
- */
+// POST REGISTER
 app.post("/register", upload.single("photo"), (req, res) => {
     const { inventory_name, description } = req.body;
 
@@ -166,102 +144,43 @@ app.post("/register", upload.single("photo"), (req, res) => {
     };
 
     inventory.push(newItem);
+    saveInventory(); // *** ЗБЕРІГАЄМО У ФАЙЛ ***
+
     res.status(201).json(newItem);
 });
 
-/**
- * @openapi
- * /inventory:
- *   get:
- *     summary: Отримати список речей
- *     responses:
- *       200:
- *         description: Список отримано
- */
+// GET ALL
 app.get("/inventory", (req, res) => {
     res.status(200).json(inventory);
 });
 
-/**
- * @openapi
- * /inventory/{id}:
- *   get:
- *     summary: Отримати річ за ID
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: integer
- *     responses:
- *       200:
- *         description: Річ знайдено
- *       404:
- *         description: Не знайдено
- */
+// GET BY ID
 app.get("/inventory/:id", (req, res) => {
     const id = parseInt(req.params.id);
     const item = inventory.find(i => i.id === id);
+
     if (!item) return res.status(404).json({ message: "Річ не знайдена" });
+
     res.status(200).json(item);
 });
 
-/**
- * @openapi
- * /inventory/{id}:
- *   put:
- *     summary: Оновити назву або опис
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: integer
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               inventory_name:
- *                 type: string
- *               description:
- *                 type: string
- *     responses:
- *       200:
- *         description: Оновлено
- *       404:
- *         description: Не знайдено
- */
+// UPDATE NAME/DESCRIPTION
 app.put("/inventory/:id", (req, res) => {
     const id = parseInt(req.params.id);
     const item = inventory.find(i => i.id === id);
+
     if (!item) return res.status(404).json({ message: "Річ не знайдена" });
 
     const { inventory_name, description } = req.body;
+
     if (inventory_name !== undefined) item.inventory_name = inventory_name;
     if (description !== undefined) item.description = description;
 
+    saveInventory();
     res.status(200).json(item);
 });
 
-/**
- * @openapi
- * /inventory/{id}/photo:
- *   get:
- *     summary: Отримати фото речі
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: integer
- *     responses:
- *       200:
- *         description: Фото повернуто
- *       404:
- *         description: Не знайдено
- */
+// GET PHOTO
 app.get("/inventory/:id/photo", (req, res) => {
     const id = parseInt(req.params.id);
     const item = inventory.find(i => i.id === id);
@@ -278,65 +197,25 @@ app.get("/inventory/:id/photo", (req, res) => {
     res.sendFile(fullPath);
 });
 
-/**
- * @openapi
- * /inventory/{id}/photo:
- *   put:
- *     summary: Оновити фото
- *     consumes:
- *       - multipart/form-data
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: integer
- *     requestBody:
- *       required: true
- *       content:
- *         multipart/form-data:
- *           schema:
- *             type: object
- *             properties:
- *               photo:
- *                 type: string
- *                 format: binary
- *     responses:
- *       200:
- *         description: Фото оновлено
- *       400:
- *         description: Фото не передано
- *       404:
- *         description: Річ не знайдена
- */
+// UPDATE PHOTO
 app.put("/inventory/:id/photo", upload.single("photo"), (req, res) => {
     const id = parseInt(req.params.id);
     const item = inventory.find(i => i.id === id);
 
-    if (!item) return res.status(404).json({ message: "Річ не знайдена" });
-    if (!req.file) return res.status(400).json({ message: "Фото не передано" });
+    if (!item)
+        return res.status(404).json({ message: "Річ не знайдена" });
+
+    if (!req.file)
+        return res.status(400).json({ message: "Фото не передано" });
 
     item.photoPath = `/inventory-photo/${req.file.filename}`;
+
+    saveInventory(); // <<< ВАЖЛИВО
+
     res.status(200).json(item);
 });
 
-/**
- * @openapi
- * /inventory/{id}:
- *   delete:
- *     summary: Видалити річ
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: integer
- *     responses:
- *       200:
- *         description: Видалено
- *       404:
- *         description: Не знайдено
- */
+// DELETE ITEM
 app.delete("/inventory/:id", (req, res) => {
     const id = parseInt(req.params.id);
     const index = inventory.findIndex(i => i.id === id);
@@ -345,32 +224,12 @@ app.delete("/inventory/:id", (req, res) => {
         return res.status(404).json({ message: "Річ не знайдена" });
 
     inventory.splice(index, 1);
+    saveInventory();
+
     res.status(200).json({ message: "Річ видалено" });
 });
 
-/**
- * @openapi
- * /search:
- *   post:
- *     summary: Пошук речі через форму (POST)
- *     consumes:
- *       - application/x-www-form-urlencoded
- *     requestBody:
- *       content:
- *         application/x-www-form-urlencoded:
- *           schema:
- *             type: object
- *             properties:
- *               id:
- *                 type: integer
- *               has_photo:
- *                 type: string
- *     responses:
- *       200:
- *         description: Знайдено
- *       404:
- *         description: Не знайдено
- */
+// POST SEARCH
 app.post("/search", (req, res) => {
     const { id, has_photo } = req.body;
     const numericId = parseInt(id);
@@ -390,11 +249,12 @@ app.post("/search", (req, res) => {
     });
 });
 
-// 405 fallback
+// FALLBACK
 app.use((req, res) => {
     res.status(405).send("Method Not Allowed");
 });
 
+// SERVER
 const server = http.createServer(app);
 
 server.listen(PORT, HOST, () => {
